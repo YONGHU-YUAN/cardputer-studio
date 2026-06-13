@@ -8,6 +8,19 @@ No M5Unified dependency: uses LovyanGFX for the screen, a small I2C driver for t
 keyboard, and the legacy ESP-IDF i2s driver for ES8311 record/playback (so the mic
 actually records).
 
+## Quick Start — just flash it
+
+**Don't want to install a build environment? Grab the prebuilt firmware.**
+
+1. Go to the [**Releases**](https://github.com/YONGHU-YUAN/cardputer-studio/releases/latest) page and download `cardputer-studio-v1.0.0-merged.bin`.
+2. Flash it to your Cardputer at offset `0x0` with **M5Burner** (GUI) or **esptool**:
+   ```
+   esptool.py --chip esp32s3 --port <PORT> --baud 921600 write_flash 0x0 cardputer-studio-v1.0.0-merged.bin
+   ```
+3. Pop in a FAT32 microSD card (put 16-bit PCM `.wav` files in `/samples` for the sampler), reset, and you're in.
+
+Full flashing instructions (M5Burner steps, separate binaries, troubleshooting) are in the [latest release notes](https://github.com/YONGHU-YUAN/cardputer-studio/releases/latest).
+
 ## Features
 
 - **SYNTH / sequencer** — 2 melodic tracks (A/B) + 8-voice drum track (3 kits: ACOU/808/909)
