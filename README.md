@@ -62,3 +62,7 @@ Press `ctrl` inside SYNTH for the on-device key map. Menu: `1` SYNTH · `2` SAMP
 
 ---
 Made on a Cardputer, for fun. 🎛️
+
+Made by Yuan · [GitHub](https://github.com/YONGHU-YUAN)
+
+Licensed under the [MIT License](LICENSE).

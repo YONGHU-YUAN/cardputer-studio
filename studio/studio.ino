@@ -1,3 +1,6 @@
+// STUDIO — Cardputer Music Machine
+// Created by Yuan (YONGHU-YUAN)
+// License: MIT
 // =====================================================================
 //  STUDIO — 无 M5Unified 的二合一固件: 采样器 + 录音机 (同一固件!)
 //  框架: LovyanGFX(屏) + I2C键盘(0x34) + ES8311(老式i2s 录+放) + SD
