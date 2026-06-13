@@ -1,5 +1,7 @@
 # STUDIO — Cardputer Music Machine
 
+![STUDIO running on a Cardputer](demo.jpg)
+
 A self-contained groovebox firmware for the **M5 Cardputer (ESP32-S3, ES8311 codec)** —
 synth + sequencer + sampler + microphone recorder + song library, all in one firmware.
 No M5Unified dependency: uses LovyanGFX for the screen, a small I2C driver for the
