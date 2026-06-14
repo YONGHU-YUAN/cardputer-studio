@@ -21,6 +21,10 @@ actually records).
 
 Full flashing instructions (M5Burner steps, separate binaries, troubleshooting) are in the [latest release notes](https://github.com/YONGHU-YUAN/cardputer-studio/releases/latest).
 
+## Quick reference card
+
+A one-page printable key map: [English](STUDIO-guide-EN.pdf) · [中文](STUDIO-guide-CN.pdf)
+
 ## Features
 
 - **SYNTH / sequencer** — 2 melodic tracks (A/B) + 8-voice drum track (3 kits: ACOU/808/909)
