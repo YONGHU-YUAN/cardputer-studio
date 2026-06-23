@@ -1,6 +1,3 @@
-// STUDIO — Cardputer Music Machine
-// Created by Yuan (YONGHU-YUAN)
-// License: MIT
 // =====================================================================
 //  STUDIO — 无 M5Unified 的二合一固件: 采样器 + 录音机 (同一固件!)
 //  框架: LovyanGFX(屏) + I2C键盘(0x34) + ES8311(老式i2s 录+放) + SD
@@ -10,6 +7,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include "driver/i2s.h"
+#include "esp_heap_caps.h"
 #include "Display.h"
 #include "CardputerKeyboard.h"
 #include "ES8311Audio.h"
@@ -47,6 +45,9 @@ char  sName[MAXS][24];
 char  sPath[MAXS][72];
 int   sN=0, sCur=0, sPage=0;
 int16_t* sBuf=NULL; uint32_t sLen=0, sRate=SR; int sLoaded=-1;
+bool trimMode=false; uint32_t trimA=0, trimB=0;   // 录音修剪: 选段 [A,B)
+uint32_t smpPeak=1; bool trimNorm=false, trimRev=false; int trimLofi=0;   // 显示峰值; 保存时归一化(默认关,避免变响爆音)/倒放/lo-fi(0-3)
+int trimDrive=0; bool trimFade=false;   // drive 暖化失真(0-3) / fade 淡入淡出(去切片咔哒)
 char loadDiag[48]="";          // 最近一次载入的诊断(格式/原因)
 
 // ---- 录音缓冲 ----
@@ -134,6 +135,7 @@ void recStart(){
   recFile.write((const uint8_t*)"fmt ",4); w32(recFile,16); w16(recFile,1); w16(recFile,1); w32(recFile,SR); w32(recFile,SR*2); w16(recFile,2); w16(recFile,16);
   recFile.write((const uint8_t*)"data",4); w32(recFile,0);
   bool codec=audio.testConnection();
+  i2s_driver_uninstall(I2S_NUM_1);   // 防御: 确保合成器/SHAKE/LOOP 的 TX 已卸, 否则麦克风会哑
   audio.enableMicForStream();
   i2s_config_t c={}; c.mode=(i2s_mode_t)(I2S_MODE_MASTER|I2S_MODE_RX);
   c.sample_rate=SR; c.bits_per_sample=I2S_BITS_PER_SAMPLE_16BIT;
@@ -141,13 +143,18 @@ void recStart(){
   c.intr_alloc_flags=ESP_INTR_FLAG_LEVEL1; c.dma_buf_count=8; c.dma_buf_len=128;
   c.use_apll=false; c.tx_desc_auto_clear=true; c.mclk_multiple=I2S_MCLK_MULTIPLE_256; c.bits_per_chan=I2S_BITS_PER_CHAN_16BIT;
   esp_err_t ie=i2s_driver_install(I2S_NUM_0,&c,0,NULL);
-  if(ie!=ESP_OK){ snprintf(diag,sizeof(diag),"codec=%s i2s=ERR",codec?"OK":"NO"); strcpy(recMsg,"i2s install fail"); if(recFile)recFile.close(); return; }   // 安装失败: 不进入录音状态
+  if(ie!=ESP_OK){ snprintf(diag,sizeof(diag),"codec=%s i2s=ERR",codec?"OK":"NO"); strcpy(recMsg,"i2s install fail");
+    if(recFile)recFile.close(); return; }   // 安装失败: 不进入录音状态
   i2s_pin_config_t p={}; p.mck_io_num=I2S_PIN_NO_CHANGE; p.bck_io_num=PIN_SCLK; p.ws_io_num=PIN_LRCK; p.data_out_num=I2S_PIN_NO_CHANGE; p.data_in_num=PIN_DIN;
   i2s_set_pin(I2S_NUM_0,&p); i2s_zero_dma_buffer(I2S_NUM_0);
-  snprintf(diag,sizeof(diag),"codec=%s i2s=%s", codec?"OK":"NO", ie==ESP_OK?"OK":"ERR");
-  static int16_t dsc[256]; size_t br; for(int i=0;i<5;i++) i2s_read(I2S_NUM_0,dsc,sizeof(dsc),&br,80/portTICK_PERIOD_MS);
+  // 丢弃几个缓冲并测峰值(看麦克风有没有数据)
+  static int16_t dsc[256]; size_t br; int32_t pk=0;
+  for(int i=0;i<8;i++){ i2s_read(I2S_NUM_0,dsc,sizeof(dsc),&br,80/portTICK_PERIOD_MS);
+    int n=br/2; for(int k=0;k<n;k++){ int v=dsc[k]; if(v<0)v=-v; if(v>pk)pk=v; } }
+  snprintf(diag,sizeof(diag),"codec=%s i2s=OK pk=%ld", codec?"OK":"NO", (long)pk);
   recFrames=0; recPeak=0; recMaxPk=0; recording=true; recT0=millis();
 }
+#define REC_GAIN 1        // 软件增益(改固定 codec 增益后不再需要软件放大; 先设 1, 按 mic peak 数字再调)
 void recPump(){
   static int16_t stx[256*2]; static int16_t mono[256]; size_t br=0;
   uint32_t maxFrames=(uint32_t)REC_MAX_SEC*SR;
@@ -155,7 +162,9 @@ void recPump(){
   int got=br/4; int32_t pl=0,pr=0; int mn=0;
   for(int i=0;i<got && recFrames<maxFrames;i++){ int16_t L=stx[i*2], R=stx[i*2+1];
     int32_t al=L<0?-L:L, ar=R<0?-R:R; if(al>pl)pl=al; if(ar>pr)pr=ar;
-    mono[mn++]=(ar>=al)?R:L; recFrames++; }          // 较响的声道
+    int32_t s=(ar>=al)?R:L; s*=REC_GAIN;                 // 软件增益
+    if(s>32767)s=32767; else if(s<-32768)s=-32768;       // 削波保护
+    mono[mn++]=(int16_t)s; recFrames++; }                // 较响的声道
   if(mn>0 && recFile) recFile.write((uint8_t*)mono, mn*2);
   pkL=pl; pkR=pr; recPeak=pl>pr?pl:pr; if(recPeak>recMaxPk)recMaxPk=recPeak;
   if(recFrames>=maxFrames) recStop();
@@ -188,10 +197,10 @@ void drawMenu(){
   lcd.setTextColor(GREY); lcd.setTextSize(1); lcd.setCursor(12,34); lcd.print("music machine");
   lcd.drawFastHLine(0,46,240,LINE);
   const char* items[5]={"SYNTH","SAMPLER","RECORDER","SONGS","LIBRARY"};
-  for(int i=0;i<5;i++){ int col=i%2, row=i/2; int x=8+col*118, y=52+row*20;
-    lcd.fillRoundRect(x,y,112,17,3,CARD);
-    lcd.fillRoundRect(x+2,y+2,13,13,2,ACC); lcd.setTextColor(BG); lcd.setTextSize(1); lcd.setCursor(x+6,y+5); lcd.printf("%d",i+1);
-    lcd.setTextColor(INK); lcd.setCursor(x+22,y+5); lcd.print(items[i]); }
+  for(int i=0;i<5;i++){ int col=i%2, row=i/2; int x=8+col*118, y=49+row*16;
+    lcd.fillRoundRect(x,y,112,15,3,CARD);
+    lcd.fillRoundRect(x+2,y+2,12,11,2,ACC); lcd.setTextColor(BG); lcd.setTextSize(1); lcd.setCursor(x+5,y+4); lcd.printf("%d",i+1);
+    lcd.setTextColor(INK); lcd.setCursor(x+21,y+4); lcd.print(items[i]); }
   char hint[40]; snprintf(hint,40, sdOK?"SD ok - %d wav    ` = back":"NO SD CARD", sN);
   footer(hint);
 }
@@ -211,7 +220,61 @@ void drawSampler(){
     if(idx==sCur){ lcd.fillRoundRect(x,by,bw,18,3,ACC); lcd.setTextColor(BG);}
     else{ lcd.fillRoundRect(x,by,bw,18,3,CARD); lcd.setTextColor(GREY);}
     lcd.setTextSize(1); lcd.setCursor(x+bw/2-3,by+6); lcd.printf("%d",i+1); }
-  footer("keys=play  ,/.=prev/next  1-8 pick  tab page");
+  footer("keys=play  ,/.=prev/next  1-8 pick  tab page  / = trim");
+}
+void drawSamplerTrim(){
+  hdr("TRIM","/ back");
+  lcd.setTextColor(INK); lcd.setTextSize(1); lcd.setCursor(8,30); lcd.print(sName[sCur]);
+  int X=8,Y=46,W=224,H=40; lcd.drawRect(X,Y,W,H,GREY);
+  uint32_t pkRef = smpPeak<200?200:smpPeak;     // 按本段峰值放大显示, 小录音也看得见
+  if(sBuf&&sLen){
+    for(int x=0;x<W;x++){ uint32_t i0=(uint64_t)x*sLen/W, i1=(uint64_t)(x+1)*sLen/W; if(i1<=i0)i1=i0+1; if(i1>sLen)i1=sLen;
+      int pk=0; for(uint32_t i=i0;i<i1;i+=4){ int v=sBuf[i]; if(v<0)v=-v; if(v>pk)pk=v; }
+      int h=(int)((uint64_t)pk*(H/2)/pkRef); if(h>H/2)h=H/2; bool in=(i0>=trimA && i0<=trimB);
+      lcd.drawFastVLine(X+x, Y+H/2-h, h*2+1, in?ACC:lcd.color565(70,76,90)); }
+    int ax=X+(int)((uint64_t)trimA*W/sLen), bx=X+(int)((uint64_t)trimB*W/sLen);
+    lcd.drawFastVLine(ax,Y-2,H+4,HL); lcd.drawFastVLine(bx,Y-2,H+4,RED);
+  }
+  float dur=(trimB-trimA)/(float)(sRate?sRate:SR);
+  lcd.setTextColor(GREY); lcd.setTextSize(1); lcd.setCursor(8,92); lcd.printf("%.2fs norm:%s rev:%s lofi:%d drv:%d fade:%s", dur, trimNorm?"on":"-", trimRev?"on":"-", trimLofi, trimDrive, trimFade?"on":"-");
+  footer(",.;'=cut n=norm r=rev []=lofi d=drive f=fade ok=save");
+}
+// 处理一遍选段(倒放 + lo-fi), f!=NULL 时按 gain 写文件, 否则只测峰值
+static void trimProcess(File* f, float gain, int* outPeak, int16_t* outBuf){
+  uint32_t n=trimB-trimA; int pk=1;
+  float a = trimLofi==1?0.45f : trimLofi==2?0.30f : trimLofi==3?0.18f : 1.0f;   // 低通系数
+  int bits = trimLofi==2?8 : trimLofi==3?6 : 16; int holdN = trimLofi==3?2:1;   // bitcrush
+  float lp=0; int hold=0; float hv=0;
+  uint32_t fl=0; if(trimFade){ fl=n/4; uint32_t mx=(uint32_t)((sRate?sRate:SR)*0.01f); if(fl>mx)fl=mx; if(fl<1)fl=1; }  // 淡变长度(~10ms 或 1/4)
+  float drv = trimDrive? (1.0f+trimDrive*2.0f):0.0f; float drvN = drv>0? tanhf(drv):1.0f;                              // drive 量
+  static int16_t ob[256]; uint32_t w=0;
+  for(uint32_t k=0;k<n;k++){ uint32_t idx = trimRev ? (trimB-1-k) : (trimA+k);
+    float x=sBuf[idx];
+    if(a<1.0f){ lp+=a*(x-lp); x=lp; }                                            // LPF
+    if(bits<16){ float lv=(float)(1<<(bits-1)); x=floorf(x/32768.0f*lv+0.5f)/lv*32768.0f; }  // 降位
+    if(holdN>1){ if(hold<=0){ hv=x; hold=holdN; } x=hv; hold--; }                // 降采样保持
+    if(drv>0){ float xn=x/32768.0f; xn=tanhf(xn*drv)/drvN; x=xn*32768.0f; }      // drive 软饱和暖化
+    float fe=1.0f;                                                               // fade 淡入淡出
+    if(fl){ if(k<fl)fe=(float)k/fl; else if(k+fl>=n)fe=(float)(n-k)/fl; if(fe<0)fe=0; if(fe>1)fe=1; }
+    int32_t v=(int32_t)(x*gain*fe); if(v>32767)v=32767; else if(v<-32768)v=-32768;
+    if(outBuf){ outBuf[k]=(int16_t)v; }                                         // 写到内存(试听用)
+    else if(f){ ob[w++]=(int16_t)v; if(w==256){ f->write((const uint8_t*)ob,512); w=0; } }
+    else { int av=v<0?-v:v; if(av>pk)pk=av; } }
+  if(f&&w) f->write((const uint8_t*)ob,w*2);
+  if(outPeak)*outPeak=pk;
+}
+void saveTrim(){
+  if(!sBuf||trimB<=trimA)return;
+  uint32_t n=trimB-trimA, d=n*2;
+  float g=1.0f;
+  if(trimNorm){ int pk; trimProcess(NULL,1.0f,&pk,NULL); g=22000.0f/pk; if(g>40.0f)g=40.0f; if(g<0.2f)g=0.2f; }  // 目标留余量, 不顶满刻度
+  char p[40]; for(int i=1;i<999;i++){ snprintf(p,40,"/samples/TRIM%d.wav",i); if(!SD.exists(p))break; }
+  File f=SD.open(p,FILE_WRITE); if(!f)return;
+  f.write((const uint8_t*)"RIFF",4); w32(f,36+d); f.write((const uint8_t*)"WAVE",4);
+  f.write((const uint8_t*)"fmt ",4); w32(f,16); w16(f,1); w16(f,1); w32(f,sRate); w32(f,sRate*2); w16(f,2); w16(f,16);
+  f.write((const uint8_t*)"data",4); w32(f,d);
+  trimProcess(&f, g, NULL, NULL);
+  f.close(); rescan();
 }
 void drawRecorder(){
   hdr(recording?"REC":"RECORDER", recording?"":"` menu");
@@ -300,6 +363,7 @@ void drawSongs(){
 }
 
 void setup(){
+  Serial.begin(115200);
   Wire.begin(8,9,400000);
   lcd.init(); lcd.setRotation(1);
   // 复古暖米色主题(与合成器统一)
@@ -318,22 +382,46 @@ void loop(){
   kb.update();
   if(st==MENU){
     if(kb.wasPressed("1")){ st=SYNTH; if(sBuf){free(sBuf);sBuf=NULL;sLoaded=-1;} if(rBuf){free(rBuf);rBuf=NULL;} seqEnter(); }
-    else if(kb.wasPressed("2")){ st=SAMPLER; if(rBuf){free(rBuf);rBuf=NULL;} if(sN&&sLoaded!=sCur){ if(loadWav(sPath[sCur]))sLoaded=sCur; } drawSampler(); }
+    else if(kb.wasPressed("2")){ st=SAMPLER; trimMode=false; if(rBuf){free(rBuf);rBuf=NULL;} if(sN&&sLoaded!=sCur){ if(loadWav(sPath[sCur]))sLoaded=sCur; } drawSampler(); }
     else if(kb.wasPressed("3")){ st=RECORDER; drawRecorder(); }
     else if(kb.wasPressed("4")){ st=SONGS; if(sBuf){free(sBuf);sBuf=NULL;sLoaded=-1;} if(rBuf){free(rBuf);rBuf=NULL;} scanSongs(); songSel=0; previewSlot=-1; renaming=false; drawSongs(); }
     else if(kb.wasPressed("5")){ st=LIBRARY; if(rBuf){free(rBuf);rBuf=NULL;} rescan(); libSel=0; confirmDel=false; renaming=false; drawLibrary(); }
     return;
   }
   // 通用返回 (改名时 ` 用作取消, 不退出)
-  if(kb.wasPressed("`") && !(st==LIBRARY && (renaming||confirmDel)) && !(st==SONGS && renaming)){
+  if(kb.wasPressed("`") && !(st==LIBRARY && (renaming||confirmDel)) && !(st==SONGS && renaming) && !(st==SAMPLER && trimMode)){
     if(recording) recStop();
     if(st==SYNTH) seqExit();
     if(st==SONGS && seqIsPreviewing()){ seqPreviewStop(); previewSlot=-1; }
     st=MENU; drawMenu(); return;
   }
   if(st==SAMPLER){
+    if(trimMode){
+      uint32_t step=sLen/128; if(step<1)step=1;
+      if(kb.wasPressed("/")||kb.wasPressed("`")){ trimMode=false; drawSampler(); }   // 退回采样列表(不保存)
+      else if(kb.wasPressed(",")){ trimA = (trimA>step)?trimA-step:0; if(trimA>=trimB&&trimB>0)trimA=trimB-1; drawSamplerTrim(); }
+      else if(kb.wasPressed(".")){ trimA+=step; if(trimA>=trimB)trimA=(trimB>0?trimB-1:0); drawSamplerTrim(); }
+      else if(kb.wasPressed(";")){ trimB=(trimB>step)?trimB-step:1; if(trimB<=trimA)trimB=trimA+1; drawSamplerTrim(); }
+      else if(kb.wasPressed("'")){ trimB+=step; if(trimB>sLen)trimB=sLen; drawSamplerTrim(); }
+      else if(kb.wasPressed("n")){ trimNorm=!trimNorm; drawSamplerTrim(); }
+      else if(kb.wasPressed("r")){ trimRev=!trimRev; drawSamplerTrim(); }
+      else if(kb.wasPressed("d")){ trimDrive=(trimDrive+1)%4; drawSamplerTrim(); }
+      else if(kb.wasPressed("f")){ trimFade=!trimFade; drawSamplerTrim(); }
+      else if(kb.wasPressed("[")){ if(trimLofi>0){trimLofi--; drawSamplerTrim();} }
+      else if(kb.wasPressed("]")){ if(trimLofi<3){trimLofi++; drawSamplerTrim();} }
+      else if(kb.wasPressed("space")){ if(sBuf&&trimB>trimA){      // 试听: 把效果(归一化/倒放/lo-fi/drive/fade)处理后再播
+          uint32_t pn=trimB-trimA; int16_t* pb=(int16_t*)malloc(pn*2);
+          if(pb){ float g=1.0f; if(trimNorm){ int pk; trimProcess(NULL,1.0f,&pk,NULL); g=22000.0f/pk; if(g>40.0f)g=40.0f; if(g<0.2f)g=0.2f; }
+            trimProcess(NULL, g, NULL, pb); audio.playFromBuffer(pb, pn, sRate); free(pb); }
+          else audio.playFromBuffer(sBuf+trimA, pn, sRate); } }   // 内存不足时退回原始试听
+      else if(kb.wasPressed("ok")){ saveTrim(); trimMode=false; drawSampler(); }
+      return;
+    }
     bool ch=false;
     int pages=(sN+7)/8; if(pages<1)pages=1;
+    if(kb.wasPressed("/") && sLoaded==sCur && sBuf && sLen){ trimMode=true; trimA=0; trimB=sLen; trimNorm=false; trimRev=false; trimLofi=0; trimDrive=0; trimFade=false; trimLofi=0;
+      { uint32_t pk=1; for(uint32_t i=0;i<sLen;i++){ int v=sBuf[i]; if(v<0)v=-v; if((uint32_t)v>pk)pk=v; } smpPeak=pk; }   // 本段峰值, 用于波形显示放大
+      drawSamplerTrim(); return; }
     if(kb.wasPressed("tab")){ sPage=(sPage+1)%pages; drawSampler(); }
     if(kb.wasPressed(",")&&sN){ sCur=(sCur+sN-1)%sN; ch=true; }   // 上一个
     if(kb.wasPressed(".")&&sN){ sCur=(sCur+1)%sN; ch=true; }      // 下一个

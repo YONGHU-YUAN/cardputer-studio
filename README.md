@@ -12,14 +12,17 @@ actually records).
 
 **Don't want to install a build environment? Grab the prebuilt firmware.**
 
-1. Go to the [**Releases**](https://github.com/YONGHU-YUAN/cardputer-studio/releases/latest) page and download `cardputer-studio-v1.0.0-merged.bin`.
+1. Go to the [**Releases**](https://github.com/YONGHU-YUAN/cardputer-studio/releases/latest) page and download `cardputer-studio-v1.1.bin`.
 2. Flash it to your Cardputer at offset `0x0` with **M5Burner** (GUI) or **esptool**:
    ```
-   esptool.py --chip esp32s3 --port <PORT> --baud 921600 write_flash 0x0 cardputer-studio-v1.0.0-merged.bin
+   esptool.py --chip esp32s3 --port <PORT> --baud 921600 write_flash 0x0 cardputer-studio-v1.1.bin
    ```
-3. Pop in a FAT32 microSD card (put 16-bit PCM `.wav` files in `/samples` for the sampler), reset, and you're in.
+3. **Set up the SD card** (FAT32/exFAT):
+   - Download `cardputer-studio-drums-v1.1.zip` from the release and unzip it.
+   - Put the whole **`drums`** folder at the card root → `<card>/drums/BD808.wav …`
+   - Insert the card and reset. `/samples` (your recordings) and `/songs` (saves) are created automatically.
 
-Full flashing instructions (M5Burner steps, separate binaries, troubleshooting) are in the [latest release notes](https://github.com/YONGHU-YUAN/cardputer-studio/releases/latest).
+The drum kits read their samples from `/drums`; if a file is missing that pad falls back to a synth drum. Recordings, samples and songs all live on the card.
 
 ## Quick reference card
 
@@ -27,16 +30,15 @@ A one-page printable key map: [English](STUDIO-guide-EN.pdf) · [中文](STUDIO-
 
 ## Features
 
-- **SYNTH / sequencer** — 2 melodic tracks (A/B) + 8-voice drum track (3 kits: ACOU/808/909)
-  + a **phrase track** that plays a trimmed slice of a long recording.
-  - Wavetable voices (saw / square / triangle / sine), ADSR, tone (brightness) control
-  - Per-track effects: delay, octave, sub, fifth, chorus
-  - Per-step probability, chords, swing, 32-step pattern with paging
-  - Live FX: bitcrush, tape-stop, arpeggiator, sample reverse, reverse playback
-  - Phrase track per-step controls: stack effects (OCT/SUB/CHO/DLY/REV/STUT),
-    movable window, length, pitch
-  - 16 song save slots (saved to SD)
-- **SAMPLER** — play any 16-bit WAV on the SD card pitched across the keyboard
+- **SYNTH / sequencer** — 2 melodic tracks (A/B) + 8-pad drum track + a **phrase track** that plays a trimmed slice of a long recording.
+  - Wavetable voices (saw / square / triangle / sine), tone (brightness) control
+  - **6 drum kits** (`1` cycles): **ACOU** (synth) + real-sample **808 / 909 / acoustic / lo-fi / retro**, loaded from `/drums`
+  - Per-step note length, accent/velocity, slide, probability, chords, swing
+  - Per-track effects: delay, octave, sub, fifth, chorus; master **space FX** (echo / reverb)
+  - Live FX: bitcrush, tape-stop, arpeggiator, reverse
+  - Phrase track per-step controls: stack effects (OCT/SUB/CHO/DLY/REV/STUT), movable window, length, pitch
+  - 16 song save slots (saved to SD, including the drum-kit choice)
+- **SAMPLER** — play any 16-bit WAV on the SD card pitched across the keyboard; **trim + effects** (normalize, reverse, lo-fi, drive, fade) saved as a new sample, with a preview that plays the processed result
 - **RECORDER** — record the mic straight to SD (streamed, low RAM), play back
 - **SONGS** — browse / preview / rename / open saved songs
 - **LIBRARY** — browse / play / delete / rename recordings
@@ -53,11 +55,11 @@ A one-page printable key map: [English](STUDIO-guide-EN.pdf) · [中文](STUDIO-
 Arduino + arduino-cli with the ESP32 core:
 
 ```
-arduino-cli compile --fqbn esp32:esp32:m5stack_cardputer studio
-arduino-cli upload  -p <PORT> --fqbn esp32:esp32:m5stack_cardputer studio
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=disabled,FlashSize=8M,PartitionScheme=default_8MB studio
+arduino-cli upload  -p <PORT> --fqbn esp32:esp32:esp32s3:PSRAM=disabled,FlashSize=8M,PartitionScheme=default_8MB studio
 ```
 
-Put 16-bit PCM WAV files in `/samples` on the SD card to use as sampler / phrase sources.
+Drum-kit WAVs go in `/drums` on the SD card; put your own 16-bit PCM WAVs in `/samples` for the sampler / phrase sources.
 
 ## Controls
 

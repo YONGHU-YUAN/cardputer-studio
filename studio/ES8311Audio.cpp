@@ -7,8 +7,8 @@ ES8311Audio::ES8311Audio() {
     _addr      = 0x18;
     _recording = false;
     _volume    = 80;
-    _micGain   = 6;      // 18dB PGA — ALC will adjust dynamically from here
-    _alcMode   = ALC_MID;  // ALC on by default — prevents clipping
+    _micGain   = 2;      // 6dB PGA — 之前 30dB(满)在 ADC 前就过载削波("炸"), 大幅降回
+    _alcMode   = ALC_OFF;  // 固定增益(关 ALC): 自动增益会乱窜 -> 忽小忽大/爆顶, 改固定更稳
     _drcMode   = DRC_OFF;
 }
 
@@ -52,10 +52,11 @@ void ES8311Audio::enableMicrophone() {
     // servo will ride from this starting point up or down as needed.
     uint8_t pgaVal = (_micGain > 10) ? 10 : _micGain;
     writeReg(0x14, 0x10 | pgaVal);  // LINSEL=1 (Mic1p-Mic1n), PGAGAIN
-    // Reg 0x16: ADC_SCALE — leave at chip default (+24dB, value=4).
-    // This is needed for decent volume from the small MEMS mic.
-    // ALC will dynamically reduce PGA gain to prevent clipping.
-    // Do NOT write reg 0x16 — let it stay at default 0x04.
+    // Reg 0x16: ADC_SCALE (digital). The old code NEVER wrote this and just
+    // assumed it powered up at +24dB — wrong. Without it speech reached only
+    // pk~14-27 post-codec (inaudible). Writing it to max lifted speech to
+    // pk~206 (clearly audible). This was the real "quiet mic" root cause.
+    writeReg(0x16, 0x06);  // ADC_SCALE: 0x07 太热/0x04 太小, 取中间档(配 PGA 6dB, ALC off)
     //
     // IMPORTANT: Apply ALC BEFORE ADC gain — when ALC is on, reg 0x17
     // becomes MAXGAIN (the ceiling ALC can boost to), not static volume.
@@ -223,13 +224,16 @@ void ES8311Audio::applyAlc() {
     writeReg(0x18, r18);
     writeReg(0x19, r19);
 
-    // MAXGAIN capped at 0xD0 (~+10dB). 0xFF (+32dB) was too hot —
-    // the ALC would boost aggressively into ADC clipping before the
-    // soft limiter on the I2S path could do anything about it.
-    writeReg(0x17, 0xD0);
+    // MAXGAIN = 0xFF (+32dB ceiling). Normal speech was too quiet with the
+    // old 0xD0 (+8.5dB) cap — the ALC ran out of boost headroom before it
+    // could lift voice to the -13dBFS target. With ALC pulling gain back on
+    // loud input + the I2S-path soft limiter catching transients, the full
+    // ceiling is safe; dial back toward 0xE8 if it gets noisy/hot.
+    uint8_t maxGain = 0xFF;
+    writeReg(0x17, maxGain);
 
-    Serial.printf("ALC regs: 15=0x%02X 18=0x%02X 19=0x%02X 17=0xD0(maxgain~+10dB)\n",
-                  (rampRate & 0x0F) << 4, r18, r19);
+    Serial.printf("ALC regs: 15=0x%02X 18=0x%02X 19=0x%02X 17=0x%02X(maxgain)\n",
+                  (rampRate & 0x0F) << 4, r18, r19, maxGain);
 }
 
 // ============================================================
